@@ -6,38 +6,38 @@
 
 ```mermaid
 flowchart TB
-  subgraph UserLayer[Usuário]
-    U[Funcionário / Operador] -->|1: Pergunta / Inscrição| Front[Front-end (Streamlit / SPA)]
+  subgraph UserLayer[Usuario]
+    U["Funcionario - Operador"] -->|1: Pergunta ou Inscricao| Front["Front-end (Streamlit | SPA)"]
   end
 
-  subgraph AppLayer[Aplicação]
-    Front --> API[API (FastAPI) / Orquestrador]
-    API --> Cache[Redis Cache]
-    API --> Auth[Auth (JWT / OAuth)]
-    API --> QueryDB[SQL DB (Postgres / SQLite) - Cadastros]
-    API --> Retrieval[Retrieval Service]
-    API --> LLM[LLM API (OpenAI / Groq / Anthropic)]
+  subgraph AppLayer[Aplicacao]
+    Front --> API["API (FastAPI) Orquestrador"]
+    API --> Cache["Redis Cache"]
+    API --> Auth["Auth JWT ou OAuth"]
+    API --> QueryDB["SQL DB (Postgres ou SQLite) Cadastros"]
+    API --> Retrieval["Retrieval Service"]
+    API --> LLM["LLM API (OpenAI, Groq, Anthropic)"]
   end
 
-  subgraph RetrievalLayer[Serviços de Recuperação]
-    Retrieval --> VectorIndex[Vector DB (FAISS / Chroma / Qdrant)]
-    Retrieval --> DocStore[Document Store (S3 / MinIO) - PDFs/TXTs]
-    Retrieval --> Embedding[Embedding Service (sentence-transformers)]
+  subgraph RetrievalLayer["Servicos de Recuperacao"]
+    Retrieval --> VectorIndex["Vector DB (FAISS, Chroma, Qdrant)"]
+    Retrieval --> DocStore["Document Store (S3, MinIO) PDFs TXTs"]
+    Retrieval --> Embedding["Embedding Service (sentence-transformers)"]
   end
 
-  subgraph Ingest[Ingestão / Indexação]
-    Ingester[Ingest Processor]
-    Ingester -->|extrai/limpa/chunks| Embedding
+  subgraph Ingest["Ingestao - Indexacao"]
+    Ingester["Ingest Processor"]
+    Ingester -->|extrai limpa chunks| Embedding
     Embedding --> VectorIndex
     Ingester --> DocStore
   end
 
-  subgraph Infra[Infra & Operações]
-    VectorIndex --> Backup[Storage (snapshot) / versão]
-    QueryDB --> Backup2[Backup SQL]
-    API --> Logs[Logs/Auditoria]
-    Logs --> SIEM[SIEM / Monitoramento]
-    API --> Queue[Fila (RabbitMQ / Redis Queue)]
+  subgraph Infra["Infra e Operacoes"]
+    VectorIndex --> Backup["Storage snapshot ou versao"]
+    QueryDB --> Backup2["Backup SQL"]
+    API --> Logs["Logs e Auditoria"]
+    Logs --> SIEM["SIEM Monitoramento"]
+    API --> Queue["Fila (RabbitMQ ou Redis Queue)"]
   end
 
   %% Flows
@@ -46,7 +46,7 @@ flowchart TB
   Retrieval -->|4: top-k chunks| API
   API -->|5: monta prompt| LLM
   LLM -->|6: resposta| API
-  API -->|7: retorna/gera minuta| Front
+  API -->|7: retorna ou gera minuta| Front
 
   style UserLayer fill:#f9f,stroke:#333,stroke-width:1px
   style AppLayer fill:#efe,stroke:#333,stroke-width:1px
