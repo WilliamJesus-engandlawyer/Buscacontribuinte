@@ -53,7 +53,7 @@ flowchart TB
   style RetrievalLayer fill:#eef,stroke:#333,stroke-width:1px
   style Ingest fill:#ffd,stroke:#333,stroke-width:1px
   style Infra fill:#f5f5f5,stroke:#333,stroke-width:1px
-```
+
 
 ---
 
