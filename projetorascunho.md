@@ -300,7 +300,7 @@ Regras estilísticas: 1 parágrafo objetivo, linguagem formal, indicar prazo par
 
 ---
 
-# 12) Riscos e limites (seja claro com stakeholder)
+# 12) Riscos e limites (é um projeto de estudante)
 
 * RAG fornece **assistência**, não substitui decisão jurídica.
 * É necessário **avalizar** as minutas e execuções por procurador humano.
