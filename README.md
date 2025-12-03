@@ -4,7 +4,6 @@
 
 ---
 
-```mermaid
 flowchart TB
   subgraph UserLayer[Usuario]
     U["Funcionario - Operador"] -->|1: Pergunta ou Inscricao| Front["Front-end (Streamlit | SPA)"]
