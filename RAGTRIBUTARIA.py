@@ -224,8 +224,29 @@ index.add(embs)
 faiss.write_index(index, str(OUTPUT_DIR / "lei_faiss.index"))
 
 print("📚 Índice FAISS criado com", index.ntotal, "documentos")
+
 # ============================================================
-# CÉLULA 9 — Função de busca (RAG)
+# CÉLULA 9 — Exportar tudo em .zip para baixar
+# ============================================================
+
+import shutil
+
+zip_path = "/content/rag_tributaria_export.zip"
+
+shutil.make_archive(
+    base_name=zip_path.replace(".zip", ""),
+    format="zip",
+    root_dir=OUTPUT_DIR
+)
+
+print("📦 ZIP criado em:", zip_path)
+files.download(zip_path)
+# ---------
+
+
+
+# ============================================================
+# CÉLULA 10 — Função de busca (RAG) mais para testar se está funcionando 
 # ============================================================
 
 def retrieve(query, top_k=4):
@@ -251,20 +272,3 @@ results = retrieve(query)
 for r in results:
     print("\n🔎 SCORE:", r["score"])
     print(r["text"][:800])
-# ============================================================
-# CÉLULA 10 — Exportar tudo em .zip para baixar
-# ============================================================
-
-import shutil
-
-zip_path = "/content/rag_tributaria_export.zip"
-
-shutil.make_archive(
-    base_name=zip_path.replace(".zip", ""),
-    format="zip",
-    root_dir=OUTPUT_DIR
-)
-
-print("📦 ZIP criado em:", zip_path)
-files.download(zip_path)
-# ---------
