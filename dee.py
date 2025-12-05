@@ -29,7 +29,7 @@ import os
 
 # ---------------------- CONFIGURAÇÃO DA PÁGINA ----------------------
 st.set_page_config(
-    page_title="Dr. Rafael Torres – Advogado Tributário Virtual",
+    page_title="Dr. Gabriel – Procurador Virtual",
     page_icon="⚖️",
     layout="centered"
 )
@@ -129,4 +129,5 @@ with st.sidebar:
     - Criado em Dezembro/2025
     """)
     st.divider()
+
     st.caption("Dica: pergunte qualquer coisa sobre IPTU, ISS, ITBI, parcelamento, isenção de aposentado, imunidade de templo...")
