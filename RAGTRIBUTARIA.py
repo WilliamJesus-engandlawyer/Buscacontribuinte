@@ -363,18 +363,6 @@ print(f"→ source_file presente em 100% dos chunks")
 print(f"→ Arquivos salvos em {OUTPUT_DIR}")
 
 # ============================================================
-# CÉLULA 6 — Popular LanceDB com metadados detalhados
-# Compatível com Célula 5 (FAISS + BM25 + LanceDB) e Célula 6
-# ============================================================
-# Objetivo:
-# - Ler documents.json e parents.json (gerados pela Célula 6)
-# - Unir com df_normas (gerado pela Célula 4/4.1)
-# - Criar/atualizar uma tabela LanceDB local com:
-#     id, text, parent_id, source_file, norma, tipo, hierarquia, numero, ano,
-#     vigente, revoga, altera, prevalece_sobre, embedding
-# - Se LanceDB não estiver disponível, salva fallback em parquet.
-
-# ============================================================
 # CÉLULA 6 CORRIGIDA E DEFINITIVA (2025) — LanceDB FUNCIONANDO
 # ============================================================
 
@@ -457,4 +445,112 @@ table.create_index(
 )
 print("Índice vetorial criado! LanceDB 100% pronto.")
 
-# CÉLULA 7 ----- embreve
+# ============================================================
+# CÉLULA 7 TURBO — BUSCA HÍBRIDA INTELIGENTE + KEYWORD BOOST
+# Versão final – Dezembro/2025 – Salve no Git!
+# ============================================================
+
+import lancedb
+from sentence_transformers import SentenceTransformer
+
+# ------------------------------------------------------------------
+# Conexão com o banco (já criado na Célula 6)
+# ------------------------------------------------------------------
+db = lancedb.connect("./lancedb")
+tbl = db.open_table("laws")
+
+# Modelo usado nos embeddings (mantém consistência)
+dense_model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+
+# ------------------------------------------------------------------
+# FUNÇÃO PRINCIPAL – busca_rag() TURBINADA
+# ------------------------------------------------------------------
+def busca_rag(
+    pergunta: str,
+    top_k: int = 6,
+    filtro_vigente: bool = True,
+    hierarquia_max: int = 3,
+    keyword_boost: bool = True,        # ← novo: força palavras-chave importantes
+    hybrid_mode: bool = True           # ← novo: vetor + full-text quando disponível
+):
+    # 1. Embedding da pergunta
+    query_vec = dense_model.encode(pergunta, normalize_embeddings=True).astype("float32")
+
+    # 2. Monta filtros SQL básicos
+    where_clauses = []
+    if filtro_vigente:
+        where_clauses.append("vigente = true")
+    if hierarquia_max:
+        where_clauses.append(f"hierarquia <= {hierarquia_max}")
+    base_filter = " AND ".join(where_clauses) if where_clauses else None
+
+    # 3. KEYWORD BOOST – palavras que quase sempre indicam relevância jurídica
+    keyword_conditions = []
+    pergunta_lower = pergunta.lower()
+
+    if keyword_boost:
+        if any(p in pergunta_lower for p in ["aposentado", "pensionista", "idoso", "pessoa com deficiência"]):
+            keyword_conditions.append("text LIKE '%aposentado%' OR text LIKE '%pensionista%' OR text LIKE '%idoso%' OR text LIKE '%deficient%'")
+        if "isenção" in pergunta_lower or "imunidade" in pergunta_lower or "não incide" in pergunta_lower:
+            keyword_conditions.append("text LIKE '%isenção%' OR text LIKE '%imunidade%' OR text LIKE '%não incide%'")
+        if "alíquota" in pergunta_lower:
+            keyword_conditions.append("text LIKE '%alíquota%' OR text LIKE '%taxa%'")
+        if "parcelamento" in pergunta_lower or "parcela" in pergunta_lower:
+            keyword_conditions.append("text LIKE '%parcelamento%' OR text LIKE '%parcela%'")
+
+    # 4. Busca principal (vetorial)
+    search = tbl.search(query_vec).metric("cosine").limit(top_k * 5)  # pega mais pra rerank
+
+    # 5. Aplica filtro base
+    if base_filter:
+        search = search.where(base_filter)
+
+    # 6. Hybrid full-text (funciona nas versões 0.15+ do LanceDB)
+    if hybrid_mode:
+        try:
+            search = search.text(pergunta)   # ← full-text BM25 automático
+        except Exception:
+            # Algumas versões ainda não têm .text() – ignora silenciosamente
+            pass
+
+    # 7. Aplica keyword boost (pré-filtro = muito rápido)
+    if keyword_conditions:
+        boost_filter = " OR ".join(keyword_conditions)
+        search = search.where(boost_filter, prefilter=True)
+
+    # 8. Executa
+    resultados = search.to_list()
+
+    # ------------------------------------------------------------------
+    # EXIBE RESULTADOS BONITINHO
+    # ------------------------------------------------------------------
+    print(f"\nRESULTADOS PARA → \"{pergunta}\"")
+    print("=" * 95)
+    for i, r in enumerate(resultados[:top_k], 1):
+        norma = r.get("norma", "N/A")
+        numero = r.get("numero", "")
+        ano = r.get("ano", "")
+        hierarquia = r.get("hierarquia", "?")
+        fonte = r.get("source_file", "N/A")
+        distancia = r.get("_distance", 0.0)
+
+        # Highlight de palavras-chave na prévia
+        preview = r["text"][:600].replace("\n", " ")
+        for palavra in ["aposentado", "isenção", "alíquota", "parcelamento", "pensionista", "idoso"]:
+            preview = preview.replace(palavra, f"**{palavra.upper()}**")
+            preview = preview.replace(palavra.title(), f"**{palavra.title()}**")
+
+        print(f"[{i}] {norma} {numero}/{ano} (H{hierarquia}) ─ Distância: {distancia:.4f} | {fonte}")
+        print(f"    → {preview}...\n")
+
+    return resultados[:top_k]   # retorna pra usar na Célula 8
+
+# ------------------------------------------------------------------
+# TESTES RÁPIDOS – rode e veja a mágica acontecer
+# ------------------------------------------------------------------
+print("CÉLULA 7 TURBO carregada com sucesso!\n")
+
+busca_rag("O aposentado com único imóvel tem isenção total de IPTU em Itaquaquecetuba?")
+busca_rag("Qual a alíquota do ISS para serviços de informática?")
+busca_rag("Uma empresa pode parcelar IPTU atrasado?")
+busca_rag("Existe imunidade de ITBI para primeira aquisição de imóvel por pessoa física?")
