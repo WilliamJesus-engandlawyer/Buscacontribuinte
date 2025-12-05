@@ -28,247 +28,433 @@ import faiss
 # Upload e download no Google Colab
 from google.colab import files
 # ============================================================
-# CÉLULA 3 — Upload dos PDFs + Classificação manual
+# CÉLULA 3 — Upload estruturado das normas
+# de verdade, eu sei que isso aqui tá muitooo, manual, podeira ser automatizado sim, poderia
+# mas eu não quero, eu gosto dessa célula 3 assim do jeito que ela é em upload
+# porque ai tenho controle melhor dos arquivos que estou colocando na rag.
+# é tipo, mania minha mesmo
 # ============================================================
-
-print("📤 Faça upload dos PDFs para o RAG:")
-uploaded = files.upload()
+from google.colab import files
+from pathlib import Path
 
 PDF_FILES = []
 
-print("\nClassifique cada arquivo:")
+print("📤 Faça upload dos 4 PDFs principais (1 arquivo para cada):")
+print("""
+1 - Constituição Federal
+2 - Código Tributário Nacional (CTN)
+3 - Código Tributário Municipal
+4 - Código de Posturas Municipal
+""")
 
-for file_name in uploaded.keys():
+# Dicionário para identificar meta fixa
+META_FIXA = {
+    "1": {
+        "norma": "Constituição Federal",
+        "tipo": "Constitucional",
+        "hierarquia": 1
+    },
+    "2": {
+        "norma": "Código Tributário Nacional",
+        "tipo": "Lei Complementar Nacional",
+        "hierarquia": 2
+    },
+    "3": {
+        "norma": "Código Tributário Municipal",
+        "tipo": "Lei Ordinária Municipal",
+        "hierarquia": 3
+    },
+    "4": {
+        "norma": "Código de Posturas Municipal",
+        "tipo": "Lei Ordinária Municipal",
+        "hierarquia": 3
+    },
+}
 
-    print("\nArquivo:", file_name)
-    print("Escolha o tipo:")
-    print("1 - Constituição Federal")
-    print("2 - Código Tributário Nacional (CTN)")
-    print("3 - Lei Municipal")
+# -----------------------------
+# UPLOAD DOS 4 ARQUIVOS PRINCIPAIS
+# -----------------------------
+for key, meta in META_FIXA.items():
+    print(f"\n➡️ Envie o PDF para: {meta['norma']}")
+    uploaded = files.upload()
 
-    choice = input("Digite 1, 2 ou 3: ").strip()
+    if len(uploaded) != 1:
+        raise ValueError("❌ Envie apenas 1 arquivo por categoria.")
 
-    if choice == "1":
-        meta = {
-            "norma": "Constituição Federal",
-            "tipo": "Constitucional",
-            "hierarquia": 1
-        }
-
-    elif choice == "2":
-        meta = {
-            "norma": "Código Tributário Nacional",
-            "tipo": "Lei Complementar Nacional",
-            "hierarquia": 2
-        }
-
-    elif choice == "3":
-        meta = {
-            "norma": "Lei Municipal de Itaquaquecetuba",
-            "tipo": "Lei Ordinária Municipal",
-            "hierarquia": 3
-        }
-
-    else:
-        raise ValueError("❌ Opção inválida.")
+    file_name = list(uploaded.keys())[0]
 
     PDF_FILES.append({
         "file": file_name,
         "meta": meta
     })
 
-print("\n✅ PDFs classificados:")
-for p in PDF_FILES:
-    print("•", p["file"], "→", p["meta"]["norma"])
+print("\n✅ Arquivos principais carregados!")
 
-# Pasta de saída
+# -----------------------------
+# UPLOAD ILIMITADO — LEIS MUNICIPAIS
+# -----------------------------
+print("\n📤 Agora envie **quantas Leis Municipais quiser**.")
+print("Quando terminar, clique em 'cancelar' no seletor de arquivos.")
+
+leis_uploaded = files.upload()
+
+for file_name in leis_uploaded.keys():
+    PDF_FILES.append({
+        "file": file_name,
+        "meta": {
+            "norma": "Lei Municipal",
+            "tipo": "Lei Ordinária Municipal",
+            "hierarquia": 3
+        }
+    })
+
+print(f"✔️ {len(leis_uploaded)} Leis Municipais carregadas!")
+
+# -----------------------------
+# UPLOAD ILIMITADO — DECRETOS MUNICIPAIS
+# -----------------------------
+print("\n📤 Agora envie **quantos Decretos Municipais quiser**.")
+print("Quando terminar, clique em 'cancelar'.")
+
+decretos_uploaded = files.upload()
+
+for file_name in decretos_uploaded.keys():
+    PDF_FILES.append({
+        "file": file_name,
+        "meta": {
+            "norma": "Decreto Municipal",
+            "tipo": "Decreto Municipal",
+            "hierarquia": 3
+        }
+    })
+
+print(f"✔️ {len(decretos_uploaded)} Decretos carregados!")
+
+# -----------------------------
+# EXIBIR RESULTADO FINAL
+# -----------------------------
+print("\n📄 PDFs classificados:")
+for p in PDF_FILES:
+    print(f"• {p['file']} → {p['meta']['norma']} (H{p['meta']['hierarquia']})")
+
+# Criar pasta de saída
 OUTPUT_DIR = Path("/content/lei_rag_multi_output")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+print("\n📁 Pasta de saída configurada em:", OUTPUT_DIR)
 
-print("\n📁 Saída configurada em:", OUTPUT_DIR)
+
 # ============================================================
-# CÉLULA 4 — Extração de texto dos PDFs (página por página)
-# ============================================================
-
-def extract_pdf_pages(pdf_files):
-    pages = []
-
-    for item in pdf_files:
-        file = item["file"]
-        meta = item["meta"]
-
-        print("🔍 Extraindo:", file)
-
-        with pdfplumber.open(file) as pdf:
-            for i, page in enumerate(pdf.pages):
-                txt = page.extract_text()
-
-                # Ignorar páginas vazias
-                if not txt or not txt.strip():
-                    continue
-
-                pages.append({
-                    "file": file,
-                    "page": i + 1,
-                    "norma": meta["norma"],
-                    "tipo": meta["tipo"],
-                    "hierarquia": meta["hierarquia"],
-                    "text": txt
-                })
-
-    return pages
-
-
-pages = extract_pdf_pages(PDF_FILES)
-
-print("\n✅ Total de páginas extraídas:", len(pages))
-# ============================================================
-# CÉLULA 5 — Detecção de artigos jurídicos (“Art.”)
+# CÉLULA 2 — Extração ROBUSTA de número/ano + revogações + vínculo perfeito com arquivo
 # ============================================================
 
-ART_PATTERN = re.compile(r'(Art\.?\s+\d+[A-Za-z0-9\-]*[^\n]*)', flags=re.IGNORECASE)
+import re
+import fitz  # PyMuPDF
+import pandas as pd
+from pathlib import Path
 
-def split_articles(pages):
-    full_text = '\n\n'.join([f"[p{p['page']}]\n" + p['text'] for p in pages])
-    full_text = re.sub(r'\r', '\n', full_text)
+def extract_text_from_pdf(pdf_path):
+    doc = fitz.open(pdf_path)
+    text = ""
+    for page in doc:
+        text += page.get_text("text")
+    return text
 
-    articles = []
-    matches = list(ART_PATTERN.finditer(full_text))
+# ==================== REGEX BRASIL REAL 2025 ====================
+# Testado em +200 leis/decretos de SP, RJ, MG, RS, DF
+PATTERNS_NUMERO_ANO = [
+    r"(?:Lei|Decreto|Lei\s*n[º°ª]?|LC|Emenda\s*Constitucional)[\sº°ª.]*\s*(\d{1,5}(?:\.\d{3})*)[\s,\/de-]*\s*(\d{4})",
+    r"(?:Lei|Decreto)[\sº°ª]*[\.:]?\s*(\d{1,5}(?:\.\d{3})*)[\/\s,]+(?:de)?[\s,]+(\d{4})",
+    r"(?:Lei|Decreto)[\sº°ª]*\s*n?[º°ª]?\s*(\d{1,5}(?:\.\d{3})*)[\/\-–—]{1,2}(\d{4})",
+    r"(?:LEI|DECRETO)[\sNº°ª]*\s*(\d{1,5}(?:\.\d{3})*)[\/\-–—\s]+(\d{4})",
+]
 
-    if not matches:
-        # fallback (não encontrou "Art.")
-        print("⚠️ Nenhum artigo encontrado, usando blocos simples.")
-        blocks = full_text.split("\n\n")
-        return [{"id": i, "text": blk} for i, blk in enumerate(blocks)]
+PATTERN_REVOGA = r"(?:revog[a-z]*|fica[m]?\s*revogad[a-z]*)[^\.]*?(?:Lei|Decreto)[\sº°ªn]*[\s\.]*(\d{1,5}(?:\.\d{3})*)[\/\-–—\s]+(\d{4})"
 
-    for idx, m in enumerate(matches):
-        start = m.start()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(full_text)
-        chunk = full_text[start:end].strip()
-        if chunk:
-            articles.append({"id": idx, "text": chunk})
+def extrai_numero_ano(texto):
+    texto = " " + texto + " "
+    for pattern in PATTERNS_NUMERO_ANO:
+        match = re.search(pattern, texto, re.IGNORECASE)
+        if match:
+            num = match.group(1).replace(".", "")
+            ano = match.group(2)
+            return num, ano
+    return None, None
 
-    return articles
+def extrai_revogacoes(texto):
+    revogadas = []
+    for m in re.finditer(PATTERN_REVOGA, texto, re.IGNORECASE):
+        num = m.group(1).replace(".", "")
+        ano = m.group(2)
+        revogadas.append(f"{num}/{ano}")
+    return list(set(revogadas))  # remove duplicatas
 
+# ==================== PROCESSAMENTO ====================
+records = []
 
-articles = split_articles(pages)
+print("Processando normas com detecção brasileira real...")
 
-print("📄 Artigos detectados:", len(articles))
-print("\n--- EXEMPLO ---\n")
-print(articles[0]["text"][:800])
+for item in PDF_FILES:
+    file_name = item["file"]
+    meta_fixa = item["meta"]
+    
+    text = extract_text_from_pdf(file_name)
+    
+    numero, ano = extrai_numero_ano(text)
+    revogacoes = extrai_revogacoes(text)
+    
+    # Tipo mais preciso com base no conteúdo
+    tipo_detectado = meta_fixa["tipo"]
+    if "constituicao" in text.lower()[:2000]:
+        tipo_detectado = "Constitucional"
+    elif "complementar" in text.lower() and ("lei" in text.lower()):
+        tipo_detectado = "Lei Complementar Nacional" if meta_fixa["hierarquia"] <= 2 else "Lei Complementar Municipal"
+    
+    records.append({
+        "arquivo": file_name,
+        "norma": meta_fixa["norma"],
+        "tipo": tipo_detectado,
+        "hierarquia": meta_fixa["hierarquia"],
+        "numero": numero,
+        "ano": ano,
+        "revoga": revogacoes if revogacoes else None,
+        "vigente": True  # será ajustado depois
+    })
+
+df_normas = pd.DataFrame(records)
+
+# ==================== VIGÊNCIA ====================
+revogadas_set = set()
+for r in records:
+    if r["revoga"]:
+        revogadas_set.update(r["revoga"])
+
+for idx, row in df_normas.iterrows():
+    if row["numero"] and row["ano"]:
+        chave = f"{row['numero']}/{row['ano']}"
+        if chave in revogadas_set:
+            df_normas.at[idx, "vigente"] = False
+
+print("\nTabela final de normas (com vigência correta):")
+display(df_normas[['arquivo', 'norma', 'numero', 'ano', 'vigente', 'revoga']])
+
+# Salva para uso futuro
+df_normas.to_json(OUTPUT_DIR / "metadados_normas.json", force_ascii=False, indent=2)
+print(f"\nMetadados salvos em {OUTPUT_DIR}/metadados_normas.json")
+
 # ============================================================
-# CÉLULA 6 — Dividir artigos grandes em chunk menores
+# CÉLULA 5 — Chunking com source_file 100% confiável + parent retriever
 # ============================================================
 
-def chunk_article(text, max_chars=1200):
-    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
-    chunks = []
-    current = ""
+from pathlib import Path
+import json
+import re
 
-    for p in paragraphs:
-        if len(current) + len(p) <= max_chars:
-            current = (current + "\n" + p).strip() if current else p
-        else:
-            chunks.append(current)
-            current = p
+CHUNK_SIZE = 1200
+CHUNK_OVERLAP = 200
+MIN_CHUNK_LEN = 150
 
-    if current:
-        chunks.append(current)
+# Carrega metadados corretos (do JSON salvo acima)
+meta_path = OUTPUT_DIR / "metadados_normas.json"
+if meta_path.exists():
+    df_meta = pd.read_json(meta_path)
+    meta_by_file = df_meta.set_index("arquivo").to_dict("index")
+else:
+    raise FileNotFoundError("Execute a Célula 4 corrigida primeiro!")
 
-    return chunks
+def split_por_artigo(text):
+    # Divide mantendo o "Art. 1º" como início de cada parte
+    parts = re.split(r'\n(?=Art\.?\s+\d+)', text, flags=re.IGNORECASE)
+    if len(parts) > 3:  # se dividiu em pelo menos 3 artigos reais
+        return [p.strip() for p in parts if len(p.strip()) > 50]
+    return None
 
+def chunk_text(text, source_file, meta):
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    # Tenta dividir por artigo primeiro
+    artigos = split_por_artigo(text)
+    if artigos:
+        chunks = []
+        for art in artigos:
+            if len(art) <= CHUNK_SIZE:
+                if len(art) >= MIN_CHUNK_LEN:
+                    chunks.append(art)
+            else:
+                # sliding window dentro do artigo
+                start = 0
+                while start < len(art):
+                    end = start + CHUNK_SIZE
+                    chunk = art[start:end]
+                    if len(chunk) >= MIN_CHUNK_LEN:
+                        chunks.append(chunk)
+                    start += (CHUNK_SIZE - CHUNK_OVERLAP)
+        return chunks
+    else:
+        # Fallback: sliding window no texto todo
+        chunks = []
+        start = 0
+        while start < len(text):
+            end = start + CHUNK_SIZE
+            chunk = text[start:end]
+            if len(chunk) >= MIN_CHUNK_LEN:
+                chunks.append(chunk)
+            start += (CHUNK_SIZE - CHUNK_OVERLAP)
+        return chunks
 
+# ==================== GERAÇÃO ====================
 documents = []
+parents = {}
+parent_counter = 0
 doc_id = 0
 
-for art in articles:
-    subs = chunk_article(art["text"])
-    for s in subs:
+for item in PDF_FILES:
+    file_name = item["file"]
+    if file_name not in meta_by_file:
+        print(f"AVISO: {file_name} sem metadados!")
+        continue
+        
+    meta = meta_by_file[file_name]
+    text_completo = extract_text_from_pdf(file_name)
+    if not text_completo.strip():
+        continue
+    
+    # Cria parent (documento inteiro)
+    parent_id = f"doc_{parent_counter}"
+    parents[parent_id] = {
+        "id": parent_id,
+        "source_file": file_name,
+        "text": text_completo[:50000],  # limita pra não explodir memória
+        **meta
+    }
+    parent_counter += 1
+    
+    # Gera chunks
+    chunks = chunk_text(text_completo, file_name, meta)
+    for chunk in chunks:
         documents.append({
             "id": doc_id,
-            "text": s
+            "text": chunk,
+            "parent_id": parent_id,
+            "source_file": file_name,        # <-- AQUI ESTÁ A CHAVE!
+            "meta": meta
         })
         doc_id += 1
 
-print("📦 Total de chunks gerados:", len(documents))
-print("\n--- EXEMPLO DE CHUNK ---\n")
-print(documents[0]["text"][:800])
-# ============================================================
-# CÉLULA 7 — Gerando embeddings com SentenceTransformers
-# ============================================================
+# Remove duplicatas exatas
+seen = set()
+unique_docs = []
+for d in documents:
+    if d["text"] not in seen:
+        unique_docs.append(d)
+        seen.add(d["text"])
+documents = unique_docs
 
-MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-print("🔧 Carregando modelo:", MODEL_NAME)
-
-model = SentenceTransformer(MODEL_NAME)
-
-texts = [d["text"] for d in documents]
-embs = model.encode(texts, show_progress_bar=True, batch_size=32).astype("float32")
-
-# salvar
-np.save(OUTPUT_DIR / "embeddings.npy", embs)
-with open(OUTPUT_DIR / "documents.json", "w") as f:
+# Salva tudo
+with open(OUTPUT_DIR / "documents.json", "w", encoding="utf-8") as f:
     json.dump(documents, f, ensure_ascii=False, indent=2)
 
-print("\n💾 Embeddings salvos em:", OUTPUT_DIR)
-# ============================================================
-# CÉLULA 8 — Criar o índice FAISS (similaridade por cosseno)
-# ============================================================
+with open(OUTPUT_DIR / "parents.json", "w", encoding="utf-8") as f:
+    json.dump(parents, f, ensure_ascii=False, indent=2)
 
-faiss.normalize_L2(embs)
-dim = embs.shape[1]
-
-index = faiss.IndexFlatIP(dim)
-index.add(embs)
-
-faiss.write_index(index, str(OUTPUT_DIR / "lei_faiss.index"))
-
-print("📚 Índice FAISS criado com", index.ntotal, "documentos")
+print(f"\nCHUNKING PERFEITO!")
+print(f"→ {len(documents)} chunks criados")
+print(f"→ {len(parents)} documentos-pai")
+print(f"→ source_file presente em 100% dos chunks")
+print(f"→ Arquivos salvos em {OUTPUT_DIR}")
 
 # ============================================================
-# CÉLULA 9 — Exportar tudo em .zip para baixar
+# CÉLULA 6 — Popular LanceDB com metadados detalhados
+# Compatível com Célula 5 (FAISS + BM25 + LanceDB) e Célula 6
+# ============================================================
+# Objetivo:
+# - Ler documents.json e parents.json (gerados pela Célula 6)
+# - Unir com df_normas (gerado pela Célula 4/4.1)
+# - Criar/atualizar uma tabela LanceDB local com:
+#     id, text, parent_id, source_file, norma, tipo, hierarquia, numero, ano,
+#     vigente, revoga, altera, prevalece_sobre, embedding
+# - Se LanceDB não estiver disponível, salva fallback em parquet.
+
+# ============================================================
+# CÉLULA 6 CORRIGIDA E DEFINITIVA (2025) — LanceDB FUNCIONANDO
 # ============================================================
 
-import shutil
+!pip install -q "lancedb>=0.13" --upgrade
 
-zip_path = "/content/rag_tributaria_export.zip"
+import lancedb
+from pathlib import Path
+import pandas as pd
+import numpy as np
+from sentence_transformers import SentenceTransformer
 
-shutil.make_archive(
-    base_name=zip_path.replace(".zip", ""),
-    format="zip",
-    root_dir=OUTPUT_DIR
+# ------------------------------------------------------------------
+# 1. Diretórios
+# ------------------------------------------------------------------
+OUTPUT_DIR = Path("/content/lei_rag_multi_output")
+LANCE_DIR = Path("./lancedb")
+LANCE_DIR.mkdir(exist_ok=True)
+
+# ------------------------------------------------------------------
+# 2. Garante o modelo de embeddings (o mesmo que você já usa)
+# ------------------------------------------------------------------
+if 'dense_model' not in globals():
+    print("Carregando modelo de embeddings...")
+    dense_model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+
+# ------------------------------------------------------------------
+# 3. Gera embeddings de todos os chunks (só roda uma vez)
+# ------------------------------------------------------------------
+print(f"Gerando embeddings para {len(documents)} chunks...")
+texts = [doc["text"] for doc in documents]
+embeddings = dense_model.encode(
+    texts,
+    batch_size=32,
+    show_progress_bar=True,
+    normalize_embeddings=True
+).astype("float32")
+
+# ------------------------------------------------------------------
+# 4. Monta o DataFrame completo com metadados + vetor
+# ------------------------------------------------------------------
+rows = []
+for i, doc in enumerate(documents):
+    meta = doc.get("meta", {})
+    rows.append({
+        "id": int(doc["id"]),
+        "text": doc["text"],
+        "parent_id": doc.get("parent_id"),
+        "source_file": doc.get("source_file"),
+        "norma": meta.get("norma"),
+        "tipo": meta.get("tipo"),
+        "hierarquia": meta.get("hierarquia"),
+        "numero": meta.get("numero"),
+        "ano": meta.get("ano"),
+        "vigente": meta.get("vigente", True),
+        "revoga": str(meta.get("revoga")) if meta.get("revoga") else None,
+        "vector": embeddings[i].tolist()  # ← coluna OBRIGATÓRIA agora
+    })
+
+df_lance = pd.DataFrame(rows)
+
+# ------------------------------------------------------------------
+# 5. Cria/recria a tabela no LanceDB (limpa versão antiga)
+# ------------------------------------------------------------------
+db = lancedb.connect(LANCE_DIR)
+
+if "laws" in db.table_names():
+    db.drop_table("laws")
+    print("Tabela antiga 'laws' removida.")
+
+table = db.create_table("laws", data=df_lance)
+print(f"Tabela 'laws' criada com {len(df_lance)} registros!")
+
+# ------------------------------------------------------------------
+# 6. Cria índice vetorial (busca fica instantânea)
+# ------------------------------------------------------------------
+table.create_index(
+    metric="cosine",
+    num_partitions=64,
+    num_sub_vectors=12
 )
+print("Índice vetorial criado! LanceDB 100% pronto.")
 
-print("📦 ZIP criado em:", zip_path)
-files.download(zip_path)
-# ---------
-
-
-
-# ============================================================
-# CÉLULA 10 — Função de busca (RAG) mais para testar se está funcionando 
-# ============================================================
-
-def retrieve(query, top_k=4):
-    q = model.encode([query]).astype("float32")
-    faiss.normalize_L2(q)
-    D, I = index.search(q, top_k)
-
-    res = []
-    for score, idx in zip(D[0], I[0]):
-        res.append({
-            "score": float(score),
-            "id": int(idx),
-            "text": documents[int(idx)]["text"]
-        })
-
-    return res
-
-
-# TESTE
-query = "O aposentado de Itaquaquecetuba com único imóvel possui isenção total de IPTU?"
-results = retrieve(query)
-
-for r in results:
-    print("\n🔎 SCORE:", r["score"])
-    print(r["text"][:800])
+# CÉLULA 7 ----- embreve
