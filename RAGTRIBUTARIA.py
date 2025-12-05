@@ -447,7 +447,7 @@ print("Índice vetorial criado! LanceDB 100% pronto.")
 
 # ============================================================
 # CÉLULA 7 TURBO — BUSCA HÍBRIDA INTELIGENTE + KEYWORD BOOST
-# Versão final – Dezembro/2025 – Salve no Git!
+# Versão final – Dezembro/2025 – deu trabalhoooooo
 # ============================================================
 
 import lancedb
@@ -546,7 +546,7 @@ def busca_rag(
     return resultados[:top_k]   # retorna pra usar na Célula 8
 
 # ------------------------------------------------------------------
-# TESTES RÁPIDOS – rode e veja a mágica acontecer
+# TESTES RÁPIDOS – rode e veja a mágicaaaaaaaa ooooo, mais para grantir se tá tudo okay
 # ------------------------------------------------------------------
 print("CÉLULA 7 TURBO carregada com sucesso!\n")
 
@@ -554,3 +554,121 @@ busca_rag("O aposentado com único imóvel tem isenção total de IPTU em Itaqua
 busca_rag("Qual a alíquota do ISS para serviços de informática?")
 busca_rag("Uma empresa pode parcelar IPTU atrasado?")
 busca_rag("Existe imunidade de ITBI para primeira aquisição de imóvel por pessoa física?")
+
+# ------------------------------------------------------------------------
+
+# ============================================================
+# CÉLULA 11 — EXPORTA TUDO PRA BAIXAR E GUARDAR NO PC
+# Versão final – Dezembro/2025
+# ============================================================
+
+import shutil
+from pathlib import Path
+from google.colab import files
+import os
+import json
+from datetime import datetime
+
+# ------------------------------------------------------------------
+# 1. CRIA PASTA TEMPORÁRIA COM TUDO ORGANIZADO
+# ------------------------------------------------------------------
+export_dir = Path("/content/RAG_Tributario_Itaquaquecetuba_COMPLETO")
+export_dir.mkdir(exist_ok=True)
+
+# Lista do que vai dentro do ZIP (tudo que você precisa pra rodar local depois)
+items_to_copy = [
+    "./lancedb",                              # Banco de dados com vetores
+    "/content/lei_rag_multi_output",          # Metadados, chunks, JSONs
+    "/content/*.pdf",                         # PDFs originais (se ainda estiverem na raiz)
+]
+
+# Copia tudo bonitinho
+for item in items_to_copy:
+    if Path(item).exists():
+        dest = export_dir / Path(item).name
+        if Path(item).is_dir():
+            if dest.exists():
+                shutil.rmtree(dest)
+            shutil.copytree(item, dest)
+            print(f"Diretório copiado: {item}")
+        else:
+            # Copia todos os PDFs da raiz (caso tenha ficado lá)
+            for pdf in Path("/content").glob("*.pdf"):
+                shutil.copy2(pdf, export_dir / pdf.name)
+
+# ------------------------------------------------------------------
+# 2. SALVA O NOTEBOOK ATUAL 
+# ------------------------------------------------------------------
+notebook_path = "RAG_Tributario_Itaquaquecetuba_2025.ipynb"
+try:
+    # Salva o notebook atual automaticamente
+    import IPython
+    js_code = '''
+    require(["base/js/namespace"], function(Jupyter) {
+        Jupyter.notebook.save_checkpoint();
+    });
+    '''
+    IPython.display.display(IPython.display.Javascript(js_code))
+    
+    # Espera um pouquinho e copia
+    import time
+    time.sleep(3)
+    
+    # Copia o .ipynb que o Colab gera
+    colab_nb = "/content/" + max([f for f in os.listdir("/content") if f.endswith(".ipynb")], key=os.path.getctime)
+    shutil.copy2(colab_nb, export_dir / notebook_path)
+    print(f"Notebook salvo como: {notebook_path}")
+except:
+    print("Notebook não foi salvo automaticamente (normal se já tiver nome). Copie manualmente se quiser.")
+
+# ------------------------------------------------------------------
+# 3. CRIA ARQUIVO README COM INSTRUÇÕES PRA RODAR LOCAL
+# ------------------------------------------------------------------
+readme_content = f"""
+# RAG TRIBUTÁRIO ITAQUAQUECETUBA – VERSÃO COMPLETA
+Projeto criado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}
+
+## O QUE TEM NESSE ZIP:
+- lancedb/ → Banco de vetores (pronto pra usar)
+- lei_rag_multi_output/ → Todos os JSONs, metadados, chunks
+- PDFs originais (se ainda estavam na raiz)
+- {notebook_path} → Notebook completo com todas as células (1 a 11)
+
+## COMO RODAR NO SEU PC (local):
+1. Instale Python 3.10+
+2. Rode no terminal:
+   pip install sentence-transformers lancedb ollama pdfplumber pymupdf tqdm
+3. Instale o Ollama: https://ollama.com/download
+4. Baixe o modelo: ollama pull gemma2:9b-instruct-qat
+5. Abra o notebook no VS Code / Jupyter
+6. Execute as células na ordem → vai funcionar 100% offline
+
+Projeto feito com carinho por você e pelo Grok em Dezembro de 2025.
+Nunca mais perca uma consulta tributária municipal.
+
+Qualquer dúvida: abre uma issue no GitHub que eu te ajudo.
+"""
+
+with open(export_dir / "LEIA_ME_PRIMEIRO.txt", "w", encoding="utf-8") as f:
+    f.write(readme_content)
+print("Arquivo LEIA_ME_PRIMEIRO.txt criado!")
+
+# ------------------------------------------------------------------
+# 4. CRIA O ZIP FINAL E FAZ DOWNLOAD AUTOMÁTICO
+# ------------------------------------------------------------------
+zip_name = f"RAG_Tributario_Itaquaquecetuba_COMPLETO_{datetime.now().strftime('%Y%m%d')}.zip"
+zip_path = f"/content/{zip_name}"
+
+shutil.make_archive(base_name=zip_path.replace(".zip", ""), format="zip", root_dir=export_dir)
+
+print(f"\nPRONTO! Seu projeto completo está em:")
+print(f"→ {zip_path}")
+print(f"→ Tamanho: {os.path.getsize(zip_path) / (1024*1024*1024):.2f} GB")
+
+# Download automático
+files.download(zip_path)
+
+print("\nDownload iniciado!")
+print("Salve esse ZIP no seu PC, no HD externo, no drive...")
+print("Esse é o seu legado tributário de 2025.")
+print("eeeeeee.")
