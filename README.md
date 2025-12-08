@@ -1,117 +1,54 @@
-# Diagrama de Arquitetura — RAG Tributário (MVP)
+# ⚖️ RAG Jurídico Inteligente
 
-> Documento com diagrama e explicações rápidas para implementar um protótipo de RAG voltado a execução fiscal / citação de contribuinte para uso em prefeitura.
+Sistema completo de **indexação, classificação, chunking e vetorização de normas jurídicas brasileiras**, utilizando **LanceDB**, **Sentence Transformers** e análise de PDF com **pdfplumber**.  
+O projeto foi desenvolvido para rodar no **Google Colab**, funcionando como um pipeline RAG educacional e prático.
 
----
-
-flowchart TB
-  subgraph UserLayer[Usuario]
-    U["Funcionario - Operador"] -->|1: Pergunta ou Inscricao| Front["Front-end (Streamlit | SPA)"]
-  end
-
-  subgraph AppLayer[Aplicacao]
-    Front --> API["API (FastAPI) Orquestrador"]
-    API --> Cache["Redis Cache"]
-    API --> Auth["Auth JWT ou OAuth"]
-    API --> QueryDB["SQL DB (Postgres ou SQLite) Cadastros"]
-    API --> Retrieval["Retrieval Service"]
-    API --> LLM["LLM API (OpenAI, Groq, Anthropic)"]
-  end
-
-  subgraph RetrievalLayer["Servicos de Recuperacao"]
-    Retrieval --> VectorIndex["Vector DB (FAISS, Chroma, Qdrant)"]
-    Retrieval --> DocStore["Document Store (S3, MinIO) PDFs TXTs"]
-    Retrieval --> Embedding["Embedding Service (sentence-transformers)"]
-  end
-
-  subgraph Ingest["Ingestao - Indexacao"]
-    Ingester["Ingest Processor"]
-    Ingester -->|extrai limpa chunks| Embedding
-    Embedding --> VectorIndex
-    Ingester --> DocStore
-  end
-
-  subgraph Infra["Infra e Operacoes"]
-    VectorIndex --> Backup["Storage snapshot ou versao"]
-    QueryDB --> Backup2["Backup SQL"]
-    API --> Logs["Logs e Auditoria"]
-    Logs --> SIEM["SIEM Monitoramento"]
-    API --> Queue["Fila (RabbitMQ ou Redis Queue)"]
-  end
-
-  %% Flows
-  API -->|2: consulta cadastro| QueryDB
-  API -->|3: retrieve top-k| Retrieval
-  Retrieval -->|4: top-k chunks| API
-  API -->|5: monta prompt| LLM
-  LLM -->|6: resposta| API
-  API -->|7: retorna ou gera minuta| Front
-
-  style UserLayer fill:#f9f,stroke:#333,stroke-width:1px
-  style AppLayer fill:#efe,stroke:#333,stroke-width:1px
-  style RetrievalLayer fill:#eef,stroke:#333,stroke-width:1px
-  style Ingest fill:#ffd,stroke:#333,stroke-width:1px
-  style Infra fill:#f5f5f5,stroke:#333,stroke-width:1px
-
+> 🖤 Há um pequeno easter-egg escondido neste repositório. Nada chamativo… apenas para quem observa o código com atenção.
 
 ---
 
-## Legenda e explicação rápida
+# 📌 Objetivo do Projeto
 
-* **Front-end**: interface simples (Streamlit para protótipo ou SPA) onde o operador pesquisa por inscrição, CPF/CNPJ ou faz perguntas em linguagem natural.
-* **API / Orquestrador**: camada central que coordena a consulta ao banco cadastral e ao service de recuperação; monta prompt e chama o LLM. Recomendo FastAPI (Python) por ser simples e rápido.
-* **SQL DB (cadastros)**: armazena os dados transacionais (contribuintes, débitos, histórico). Pode ser SQLite no MVP; Postgres para produção.
-* **Retrieval Service**: busca vetorial: consulta FAISS/Chroma/Qdrant para recuperar trechos relevantes da legislação, súmulas e pareceres.
-* **Vector DB (FAISS)**: índice vetorial contendo embeddings dos *chunks* de leis, decretos, ementas e pareceres. FAISS funciona bem em CPU para os volumes previstos.
-* **Document Store**: S3/MinIO para guardar PDFs originais e versões (útil para auditoria e extração persistente).
-* **Embedding Service**: componente responsável por gerar embeddings (p.ex. `sentence-transformers`) durante indexação e para consultas (opcionalmente précomputar apenas para documentos).
-* **Ingest Processor**: pipeline de extração de PDF → limpeza → chunk → geração de embedding → indexação. Deve gravar metadados (fonte, vigência, página, data).
-* **LLM API**: provedor externo que recebe o prompt com os trechos recuperados e os dados do contribuinte; retorna resposta e, se solicitado, minuta. **Sempre peça para citar fontes** no prompt.
-* **Cache (Redis)**: cache de respostas/perguntas frequentes e de prompts montados para reduzir chamadas ao LLM e custos.
-* **Fila (Queue)**: para processar tarefas longas (bulk index, geração de minutas em lote, exportação de relatórios).
-* **Auth & Logs**: autenticação e auditoria obrigatórias; registre pergunta, trechos usados, usuário, timestamp e resposta para conformidade.
+Criar um pipeline automatizado capaz de transformar coleções de PDFs jurídicos (leis, decretos, constituições, códigos, CTM, CTN, LAI etc.) em um **banco vetorial robusto**, pronto para consultas inteligentes através de modelos de linguagem (LLMs).
+
+Este projeto permite:
+
+- Montar ambientes RAG jurídicos rapidamente  
+- Organizar grandes quantidades de documentos legais  
+- Criar sistemas de resposta fundamentada  
+- Potencializar pesquisas e análises com IA  
 
 ---
 
-## Recomendações de dimensionamento / performance
+# 🧠 Funcionalidades
 
-* **Volumes esperados (prefeitura ~100k habitantes)**
-
-  * Cadastros: 50k–200k registros → Postgres dá conta. Index por inscrição/CPF.
-  * Chunks jurídicos: 500–5.000 chunks → FAISS em CPU serve bem.
-* **Latência**
-
-  * SQL lookup: < 20 ms
-  * FAISS search (10k emb): < 20 ms
-  * LLM call: 0.5–2 s (depende do provedor)
-* **Reduza custo de LLM**: enviar somente top-3 chunks + resumo dos débitos.
-
----
-
-## Segurança, LGPD e governança
-
-* Dados pessoais e fiscais são sensíveis — criptografe dados em repouso e em trânsito.
-* Autenticação forte (2FA) para operadores que geram minutas/executam atos.
-* Mecanismo de revisão humana obrigatório para qualquer ato administrativo/execução.
-* Logging e retenção de logs por período acordado (auditoria). Limite quem pode visualizar dados completos.
+✔ Upload múltiplo de PDFs  
+✔ Extração de texto via pdfplumber  
+✔ Classificação automática: *Direito Formal* vs *Direito Material*  
+✔ Detecção da norma (Lei nº XXXX/AAAA)  
+✔ Chunking com overlap  
+✔ Geração de embeddings semânticos  
+✔ Armazenamento vetorial com LanceDB  
+✔ Indexação por similaridade  
+✔ Criação de metadados: norma, vigência, categoria e hierarquia  
+✔ Totalmente executável no Colab  
 
 ---
 
-## Passos práticos para implementar o MVP (ordem sugerida)
+# 🛠️ Tecnologias Utilizadas
 
-1. Reunir 10–20 documentos legais (leis municipais + decretos) e 1 CSV de teste (50–200 contribuintes).
-2. Implementar ingest pipeline e indexar em FAISS (notebook Colab).
-3. Implementar API/Orquestrador: endpoints para `query_by_inscricao` e `query_textual`.
-4. Integrar com LLM (OpenAI/Groq) e montar prompt padrão que exige citações de fontes.
-5. Criar Streamlit simples com campos: inscrição, pergunta livre, visualizar trechos retornados e gerar minuta.
-6. Validar 30 casos reais com equipe jurídica da prefeitura.
+| Tecnologia | Função |
+|-----------|--------|
+| **LanceDB** | Banco vetorial local e rápido |
+| **Sentence Transformers** | Modelo para embeddings |
+| **neuralmind/bert-base-portuguese-cased** | BERT especializado em português |
+| **pdfplumber** | Extração precisa de texto de PDFs |
+| **PyArrow** | Tabelas colunares de alto desempenho |
+| **Regex** | Identificação automática de normas |
+| **TQDM** | Barras de progresso |
+| **Google Colab** | Ambiente de execução |
 
 ---
 
-Se quiser, eu posso gerar também:
+# 🧩 Arquitetura do Pipeline
 
-* um **diagrama de implantação (infra-as-code)** com serviços Docker/Compose;
-* um **notebook Colab** pronto pra indexar 1 PDF e testar 3 queries;
-* um **template Streamlit** mínimo integrado ao fluxo.
-
-Diga qual desses você quer que eu gere em seguida.
