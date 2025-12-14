@@ -148,37 +148,45 @@ tbl.create_fts_index("full_text")  # BM25 nativo
 print("LanceDB 2.0 criado com hybrid search. Pronto para guerra.")
 
 # ============================================================
-# CÉLULA 4 — bm25
+# CÉLULA 4 — Função de Busca Híbrida e Reranking
 # ============================================================
 
-
-from sentence_transformers import CrossEncoder
-from rank_bm25 import BM25Okapi
-
-reranker = CrossEncoder("BAAI/bge-reranker-large", device="cuda")
+# Coeficientes de Ponderação (Ajustáveis)
+VETOR_WEIGHT = 0.7  # Peso da Similaridade Semântica (Vector/Distance)
+BM25_WEIGHT = 0.3   # Peso da Relevância de Palavra-Chave (BM25)
 
 def pergunta(texto_pergunta, top_k=12, rerank_top=6):
     # embedding da pergunta
     query_vec = model.encode(texto_pergunta, normalize_embeddings=True).tolist()
 
-    # BUSCA HÍBRIDA CORRIGIDA (sem include_vector)
-    resultados = tbl.search(query_vec,
-                            vector_column_name="vector") \
-                   .limit(top_k*3) \
-                   .where("tipo in ('lei', 'conceito')") \
-                   .to_list()
+    # 1. BUSCA VETORIAL (k-NN)
+    resultados = tbl.search(query_vec, vector_column_name="vector") \
+                    .limit(top_k * 3) \
+                    .where("tipo in ('lei', 'conceito')") \
+                    .to_list()
 
-    # BM25 como segunda camada
+    # 2. Refinamento com BM25 (na sub-amostra do k-NN)
     tokenized_corpus = [doc["text"].lower().split() for doc in resultados]
     bm25 = BM25Okapi(tokenized_corpus)
     tokenized_query = texto_pergunta.lower().split()
     bm25_scores = bm25.get_scores(tokenized_query)
 
-    # combina scores
+    # 3. Combina scores de similaridade vetorial e BM25
     for i, doc in enumerate(resultados):
-        doc["score_hybrid"] = 0.7 * (1 - doc["_distance"]) + 0.3 * bm25_scores[i]
+        # A distância (LanceDB) é convertida em similaridade (1 - distance)
+        similarity_score = 1 - doc["_distance"]
+        doc["score_hybrid"] = (VETOR_WEIGHT * similarity_score) + (BM25_WEIGHT * bm25_scores[i])
 
+    # Ordena pelo score híbrido e seleciona o top_k
     resultados = sorted(resultados, key=lambda x: x["score_hybrid"], reverse=True)[:top_k]
+
+    # 4. Reranking final (Cross-Encoder)
+    pairs = [[texto_pergunta, r["text"]] for r in resultados]
+    scores = reranker.predict(pairs)
+    for i, r in enumerate(resultados):
+        r["rerank_score"] = scores[i]
+
+    resultados = sorted(resultados, key=lambda x: x["rerank_score"], reverse=True)[:rerank_top]
 
     # reranking final
     pairs = [[texto_pergunta, r["text"]] for r in resultados]
