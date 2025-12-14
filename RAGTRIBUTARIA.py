@@ -197,3 +197,73 @@ def pergunta(texto_pergunta, top_k=12, rerank_top=6):
 pergunta("o que é IPTU?")
 pergunta("posso parcelar IPTU atrasado em até quantas vezes na maioria dos municípios?")
 pergunta("qual o prazo de recurso na lei 9784")
+
+'''
+proximos passos, implementar a existencia DE UMA TABELA PROCESSOS NO LanceDB.
+Conecta ao Meu banco de dados LanceDB existente (./lancedb_rag2).
+
+Define a estrutura do pyarrow.Table com todos os metadados (incluindo id_processo, tributo, fase_atual, data_chave) e o vetor (vector).
+
+Gera os embeddings (model.encode) para o campo text (o resumo do processo).
+
+Cria a tabela chamada "processos" no seu LanceDB.
+
+Cria índices vetoriais e FTS (Full-Text Search) para que a busca seja rápida e precisa.
+
+Após rodar isso, seu banco de dados terá duas tabelas independentes, mas acessíveis:
+
+leis: Contém artigos, normas e conceitos jurídicos.
+
+processos: Contém resumos e metadados estruturados dos processos tributários.
+
+import lancedb
+import pyarrow as pa
+from sentence_transformers import SentenceTransformer # O mesmo modelo 'intfloat/multilingual-e5-large-instruct'
+
+db = lancedb.connect("./lancedb_rag2")
+model = SentenceTransformer("intfloat/multilingual-e5-large-instruct", device="cuda")
+
+# 1. Dados de exemplo (Mockup de dados já processados do PDF)
+dados_processos = [
+    {
+        "id_processo": "2024/000123",
+        "tributo": "IPTU",
+        "fase_atual": "Notificação",
+        "data_chave": "2024-12-10",
+        "valor_devido": 15000.00,
+        "devedor_anon": "hash_abcd123",
+        "text": "Processo 2024/000123. Dívida de IPTU (exercício 2024). Contribuinte foi notificado em 10/12/2024. Prazo legal para defesa é de 30 dias. Imóvel em área de alto valor.",
+        "tipo": "processo"
+    },
+    # ... mais processos
+]
+
+# 2. Geração dos Vetores (Embeddings)
+texts = [d["text"] for d in dados_processos]
+vectors = model.encode(texts, normalize_embeddings=True, show_progress_bar=True).tolist()
+
+# 3. Preparação do PyArrow Table
+table_data_processos = pa.table({
+    "id": list(range(len(dados_processos))),
+    "id_processo": [d["id_processo"] for d in dados_processos],
+    "tributo": [d["tributo"] for d in dados_processos],
+    "fase_atual": [d["fase_atual"] for d in dados_processos],
+    "data_chave": pa.array([d["data_chave"] for d in dados_processos], type=pa.timestamp("ms")), # Usa timestamp!
+    "valor_devido": [d["valor_devido"] for d in dados_processos],
+    "devedor_anon": [d["devedor_anon"] for d in dados_processos],
+    "text": texts,
+    "tipo": [d["tipo"] for d in dados_processos],
+    "vector": vectors
+})
+
+# 4. Criação da Tabela no LanceDB
+if "processos" in db.table_names():
+    db.drop_table("processos")
+
+tbl_processos = db.create_table("processos", data=table_data_processos)
+
+# 5. Criação de Índices
+tbl_processos.create_index(metric="cosine")
+tbl_processos.create_fts_index("text") # Para busca de palavras-chave no resumo
+print("Tabela 'processos' criada e indexada.")
+'''
