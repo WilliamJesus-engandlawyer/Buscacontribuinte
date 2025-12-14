@@ -188,14 +188,6 @@ def pergunta(texto_pergunta, top_k=12, rerank_top=6):
 
     resultados = sorted(resultados, key=lambda x: x["rerank_score"], reverse=True)[:rerank_top]
 
-    # reranking final
-    pairs = [[texto_pergunta, r["text"]] for r in resultados]
-    scores = reranker.predict(pairs)
-    for i, r in enumerate(resultados):
-        r["rerank_score"] = scores[i]
-
-    resultados = sorted(resultados, key=lambda x: x["rerank_score"], reverse=True)[:rerank_top]
-
     print(f"Pergunta: {texto_pergunta}\n")
     for r in resultados:
         fonte = r["source"] if r["source"] != "base_conceitos" else "Conceito geral"
