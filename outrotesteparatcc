@@ -1,0 +1,543 @@
+# ============================================================
+# RAG JURÃDICA v2.0 â€” TributÃ¡rio & Administrativo
+# Otimizada para Google Colab (GPU T4/A100)
+# ============================================================
+
+# ============================================================
+# CÃ‰LULA 1 â€” InstalaÃ§Ã£o das dependÃªncias
+# ============================================================
+# IMPORTANTE: reinicie o runtime apÃ³s esta cÃ©lula!
+
+# numpy 1.26.4 primeiro (evita conflito com lancedb)
+import subprocess
+subprocess.run(["pip", "install", "numpy==1.26.4", "--force-reinstall", "-q"], check=True)
+
+# Demais libs
+subprocess.run([
+    "pip", "install", "-q",
+    "lancedb==0.13.0",
+    "tantivy==0.22.0",
+    "sentence-transformers==3.1.1",
+    "pdfplumber",
+    "tqdm",
+    "rank_bm25",
+    "python-dotenv",
+    "pyarrow>=14.0",
+    "torch",
+    "transformers",
+], check=True)
+
+print("âœ… InstalaÃ§Ã£o concluÃ­da. REINICIE O RUNTIME AGORA antes de continuar.")
+
+
+# ============================================================
+# CÃ‰LULA 2 â€” Imports, modelo e conceitos jurÃ­dicos
+# ============================================================
+
+import re
+import os
+import json
+from pathlib import Path
+
+import pdfplumber
+import pyarrow as pa
+import numpy as np
+import lancedb
+from tqdm.auto import tqdm
+from rank_bm25 import BM25Okapi
+from sentence_transformers import SentenceTransformer, CrossEncoder
+from google.colab import files
+
+# ------------------------------------------------------------
+# ConfiguraÃ§Ãµes globais
+# ------------------------------------------------------------
+DB_PATH        = "./lancedb_rag2"
+EMBED_MODEL    = "intfloat/multilingual-e5-large-instruct"
+RERANK_MODEL   = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"  # multilingual + rÃ¡pido
+DEVICE         = "cuda"          # troca para "cpu" se nÃ£o tiver GPU
+CHUNK_MAX_CHARS = 3000
+CHUNK_MIN_CHARS = 80
+VETOR_WEIGHT   = 0.65
+BM25_WEIGHT    = 0.35
+
+# ------------------------------------------------------------
+# Carrega modelos uma Ãºnica vez (evita recarregar entre cÃ©lulas)
+# ------------------------------------------------------------
+print("â³ Carregando modelos de embedding e reranking...")
+embed_model = SentenceTransformer(EMBED_MODEL, device=DEVICE)
+reranker    = CrossEncoder(RERANK_MODEL, device=DEVICE)
+print("âœ… Modelos prontos.")
+
+# ------------------------------------------------------------
+# Base de conceitos jurÃ­dicos (70+ itens)
+# Soluciona o problema "sabe tudo de IPTU mas nÃ£o sabe o que Ã© IPTU"
+# ------------------------------------------------------------
+CONCEITOS = [
+    # â”€â”€ Impostos municipais â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "IPTU Ã© o Imposto sobre a Propriedade Predial e Territorial Urbana, tributo de competÃªncia municipal previsto no art. 156, I da CF/88 e regulamentado pelo CTN (arts. 32â€“34).",
+    "IPTU progressivo no tempo: imÃ³vel que nÃ£o cumpre funÃ§Ã£o social pode sofrer alÃ­quota majorada por atÃ© 5 anos consecutivos (EC 29/2000 e Estatuto da Cidade).",
+    "ISS (ISSQN) Ã© o Imposto sobre ServiÃ§os de Qualquer Natureza, tributo municipal previsto no art. 156, III da CF/88 e regulamentado pela LC 116/2003.",
+    "ISS: competÃªncia do municÃ­pio onde o serviÃ§o Ã© prestado, salvo exceÃ§Ãµes taxativas do art. 3Âº da LC 116/2003 (competÃªncia do domicÃ­lio do prestador).",
+    # â”€â”€ Impostos estaduais â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "IPVA Ã© o Imposto sobre a Propriedade de VeÃ­culos Automotores, de competÃªncia dos Estados e do DF (art. 155, III da CF/88); 50% da arrecadaÃ§Ã£o pertence ao municÃ­pio onde licenciado.",
+    "ICMS Ã© o Imposto sobre CirculaÃ§Ã£o de Mercadorias e ServiÃ§os de transporte interestadual/intermunicipal e comunicaÃ§Ã£o, de competÃªncia estadual (art. 155, II CF/88 e LC 87/1996).",
+    "ITCMD Ã© o Imposto sobre TransmissÃ£o Causa Mortis e DoaÃ§Ã£o, de competÃªncia estadual (art. 155, I CF/88).",
+    # â”€â”€ Impostos federais â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "IR (Imposto de Renda) incide sobre renda e proventos de qualquer natureza, de competÃªncia da UniÃ£o (art. 153, III CF/88 e arts. 43â€“45 CTN).",
+    "IPI Ã© o Imposto sobre Produtos Industrializados, federal, seletivo e nÃ£o-cumulativo (art. 153, IV CF/88).",
+    "IOF Ã© o Imposto sobre OperaÃ§Ãµes Financeiras (crÃ©dito, cÃ¢mbio, seguro e tÃ­tulos), federal, com funÃ§Ã£o extrafiscal.",
+    "ITR Ã© o Imposto Territorial Rural, federal, progressivo, com funÃ§Ã£o extrafiscal para coibir latifÃºndio improdutivo.",
+    # â”€â”€ EspÃ©cies tributÃ¡rias â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "Taxa Ã© tributo vinculado Ã  atuaÃ§Ã£o estatal especÃ­fica (poder de polÃ­cia ou serviÃ§o pÃºblico especÃ­fico e divisÃ­vel). NÃ£o pode ter base de cÃ¡lculo idÃªntica Ã  de imposto (art. 145, II CF e art. 77 CTN).",
+    "ContribuiÃ§Ã£o de melhoria Ã© cobrada para custear obra pÃºblica da qual resulte valorizaÃ§Ã£o imobiliÃ¡ria; o limite individual Ã© o quantum de valorizaÃ§Ã£o do imÃ³vel (art. 145, III CF e DL 195/1967).",
+    "EmprÃ©stimo compulsÃ³rio Ã© exclusivo da UniÃ£o, exige LC, e sÃ³ cabe em situaÃ§Ãµes de calamidade, guerra ou investimento urgente de relevante interesse nacional (art. 148 CF/88).",
+    "ContribuiÃ§Ãµes especiais (art. 149 CF) dividem-se em: contribuiÃ§Ãµes sociais (INSS, PIS, COFINS), CIDE e contribuiÃ§Ãµes corporativas (OAB, CRC etc.).",
+    # â”€â”€ PrincÃ­pios tributÃ¡rios â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "Legalidade tributÃ¡ria: Ã© vedado exigir tributo sem lei que o estabeleÃ§a (art. 150, I CF/88 e art. 97 CTN).",
+    "Anterioridade anual: tributo criado/majorado sÃ³ pode ser cobrado no exercÃ­cio financeiro seguinte ao da lei (art. 150, III, 'b' CF/88). ExceÃ§Ãµes: IPI, IOF, II, IE, CIDE-combustÃ­veis.",
+    "Anterioridade nonagesimal (noventena): alÃ©m do ano seguinte, deve-se aguardar 90 dias da publicaÃ§Ã£o da lei (art. 150, III, 'c' CF/88). ExceÃ§Ãµes: IR, base de cÃ¡lculo do IPTU e IPVA.",
+    "Irretroatividade: lei tributÃ¡ria nÃ£o pode atingir fatos geradores anteriores Ã  sua vigÃªncia (art. 150, III, 'a' CF/88).",
+    "Isonomia tributÃ¡ria: vedado tratamento desigual entre contribuintes em situaÃ§Ã£o equivalente (art. 150, II CF/88).",
+    "NÃ£o-confisco: Ã© vedado utilizar tributo com efeito de confisco (art. 150, IV CF/88).",
+    "NÃ£o-limitaÃ§Ã£o ao trÃ¡fego: vedado cobrar tributo para limitar o trÃ¡fego de pessoas ou bens entre Estados/MunicÃ­pios, salvo pedÃ¡gio (art. 150, V CF/88).",
+    "Capacidade contributiva: os impostos devem ser graduados segundo a capacidade econÃ´mica do contribuinte (art. 145, Â§1Âº CF/88).",
+    # â”€â”€ ObrigaÃ§Ã£o e crÃ©dito tributÃ¡rio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "Fato gerador Ã© a situaÃ§Ã£o definida em lei como necessÃ¡ria e suficiente para o surgimento da obrigaÃ§Ã£o tributÃ¡ria (art. 114 CTN).",
+    "ObrigaÃ§Ã£o tributÃ¡ria principal: pagamento do tributo ou penalidade. ObrigaÃ§Ã£o acessÃ³ria: deveres formais (declarar, emitir nota fiscal etc.).",
+    "CrÃ©dito tributÃ¡rio Ã© constituÃ­do pelo lanÃ§amento (art. 142 CTN); pode ser: de ofÃ­cio, por declaraÃ§Ã£o ou homologaÃ§Ã£o.",
+    "LanÃ§amento por homologaÃ§Ã£o (autolanÃ§amento): o contribuinte calcula e recolhe; o fisco homologa expressa ou tacitamente em 5 anos.",
+    "DecadÃªncia tributÃ¡ria: a Fazenda perde o direito de lanÃ§ar apÃ³s 5 anos (art. 173 CTN); para lanÃ§amento por homologaÃ§Ã£o, prazo do art. 150, Â§4Âº CTN.",
+    "PrescriÃ§Ã£o tributÃ¡ria: apÃ³s o lanÃ§amento, a Fazenda tem 5 anos para ajuizar execuÃ§Ã£o fiscal (art. 174 CTN).",
+    "Causas de suspensÃ£o do crÃ©dito tributÃ¡rio (art. 151 CTN): moratÃ³ria, depÃ³sito integral, impugnaÃ§Ã£o/recurso, liminar/tutela antecipada, parcelamento.",
+    "Causas de extinÃ§Ã£o do crÃ©dito tributÃ¡rio (art. 156 CTN): pagamento, compensaÃ§Ã£o, transaÃ§Ã£o, remissÃ£o, decadÃªncia, prescriÃ§Ã£o, conversÃ£o do depÃ³sito em renda etc.",
+    "Causas de exclusÃ£o do crÃ©dito tributÃ¡rio (art. 175 CTN): isenÃ§Ã£o e anistia (nÃ£o se confundem com imunidade).",
+    "Imunidade tributÃ¡ria Ã© prevista na ConstituiÃ§Ã£o e impede a incidÃªncia do tributo (ex.: imunidade recÃ­proca, templos, partidos, imprensa â€” art. 150, VI CF/88).",
+    # â”€â”€ ExecuÃ§Ã£o fiscal e processo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "ExecuÃ§Ã£o fiscal Ã© regida pela Lei 6.830/1980 (LEF); pressupÃµe CDA (CertidÃ£o de DÃ­vida Ativa) regularmente inscrita.",
+    "Embargos Ã  execuÃ§Ã£o fiscal: prazo de 30 dias contados da intimaÃ§Ã£o da penhora; suspendem a execuÃ§Ã£o (art. 16 LEF).",
+    "ExceÃ§Ã£o de prÃ©-executividade: matÃ©ria de ordem pÃºblica (nulidade da CDA, decadÃªncia, prescriÃ§Ã£o) pode ser arguida sem garantia do juÃ­zo.",
+    "CARF (Conselho Administrativo de Recursos Fiscais) Ã© o tribunal administrativo federal para recursos de lanÃ§amentos federais.",
+    "Penhora on-line (BACENJUD/SISBAJUD): permite bloqueio de ativos financeiros via sistema eletrÃ´nico, prioridade na ordem de penhora.",
+    # â”€â”€ Processo administrativo (Lei 9.784/1999) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "Lei 9.784/1999 regula o processo administrativo federal: prazos, recursos, princÃ­pios (legalidade, finalidade, motivaÃ§Ã£o, razoabilidade, proporcionalidade, ampla defesa, contraditÃ³rio, seguranÃ§a jurÃ­dica, interesse pÃºblico e eficiÃªncia).",
+    "Prazo de impugnaÃ§Ã£o administrativa na Lei 9.784: 10 dias para manifestaÃ§Ã£o em geral; recursos em 10 dias da ciÃªncia.",
+    "Prazo decadencial da autotutela (SÃºmula 473 STF e art. 54 da Lei 9.784): administraÃ§Ã£o tem 5 anos para anular atos ilegais dos quais decorram efeitos favorÃ¡veis a particulares de boa-fÃ©.",
+    "MotivaÃ§Ã£o dos atos administrativos: obrigatÃ³ria para atos que neguem direitos, imponham sanÃ§Ãµes ou revoguem/anulem atos anteriores.",
+    # â”€â”€ Lei de Acesso Ã  InformaÃ§Ã£o â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "LAI (Lei 12.527/2011) garante acesso a informaÃ§Ãµes pÃºblicas; prazo geral de 20 dias (prorrogÃ¡vel por mais 10) para resposta.",
+    "LAI: informaÃ§Ãµes sigilosas classificadas em ultrassecreto (25 anos), secreto (15 anos) e reservado (5 anos); reclassificaÃ§Ã£o Ã© possÃ­vel.",
+    "LAI: qualquer cidadÃ£o pode requerer informaÃ§Ã£o sem necessidade de justificar o pedido.",
+    # â”€â”€ Direito formal vs. material â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "Direito Material regula direitos e deveres substantivos (ex.: CTN). Direito Formal regula o processo e o procedimento (ex.: CPC, Lei 9.784).",
+    "ContraditÃ³rio e ampla defesa (art. 5Âº, LV CF/88) se aplicam a processos judiciais e administrativos.",
+    # â”€â”€ Responsabilidade tributÃ¡ria â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "Responsabilidade tributÃ¡ria de terceiros (arts. 134â€“135 CTN): sÃ³cios-gerentes respondem pessoalmente por atos praticados com excesso de poderes ou infraÃ§Ã£o Ã  lei.",
+    "Redirecionamento da execuÃ§Ã£o fiscal ao sÃ³cio exige prova de dissoluÃ§Ã£o irregular da sociedade (SÃºmula 435 STJ) ou ato doloso.",
+    "DenÃºncia espontÃ¢nea (art. 138 CTN): exclui a multa se o contribuinte paga o tributo com juros antes de inÃ­cio de procedimento fiscal.",
+    # â”€â”€ Parcelamento e REFIS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "Parcelamento tributÃ¡rio suspende a exigibilidade do crÃ©dito (art. 151, VI CTN); descumprimento rescinde o parcelamento e restaura a dÃ­vida integral.",
+    "Programas de recuperaÃ§Ã£o fiscal (REFIS, PERT, PARCELAMENTO ESPECIAL) frequentemente oferecem descontos em multas e juros, com condiÃ§Ãµes especÃ­ficas por lei.",
+    # â”€â”€ Simples Nacional â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "Simples Nacional Ã© o regime simplificado para ME e EPP (LC 123/2006); recolhimento unificado de vÃ¡rios tributos em DAS.",
+    # â”€â”€ ITBI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "ITBI Ã© o Imposto sobre TransmissÃ£o de Bens ImÃ³veis inter vivos, de competÃªncia municipal (art. 156, II CF/88); nÃ£o incide em integralizaÃ§Ã£o de capital ou fusÃ£o/cisÃ£o (imunidade).",
+    # â”€â”€ Fiscal municipal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "Nota Fiscal de ServiÃ§os EletrÃ´nica (NFS-e): obrigatÃ³ria para prestadores de serviÃ§o em municÃ­pios que a instituÃ­ram; base para retenÃ§Ã£o do ISS na fonte.",
+    "AlvarÃ¡ e taxa de licenÃ§a: taxa pelo poder de polÃ­cia vinculada ao exercÃ­cio de atividade econÃ´mica; irregularidades podem gerar auto de infraÃ§Ã£o.",
+    # â”€â”€ Conceitos gerais do direito tributÃ¡rio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "Sujeito ativo da obrigaÃ§Ã£o tributÃ¡ria Ã© a pessoa jurÃ­dica de direito pÃºblico competente para exigir o tributo (art. 119 CTN).",
+    "Sujeito passivo pode ser contribuinte (relaÃ§Ã£o direta com o fato gerador) ou responsÃ¡vel (obrigaÃ§Ã£o por disposiÃ§Ã£o expressa de lei â€” art. 121 CTN).",
+    "Base de cÃ¡lculo Ã© a grandeza sobre a qual se aplica a alÃ­quota para apurar o tributo devido.",
+    "AlÃ­quota progressiva aumenta conforme a base cresce (IR, IPTU). AlÃ­quota proporcional (flat rate) permanece constante.",
+    "Non bis in idem: vedado tributar duplamente o mesmo fato gerador pela mesma entidade federativa.",
+    "CompetÃªncia tributÃ¡ria Ã© indelegÃ¡vel; a capacidade tributÃ¡ria ativa (cobrar) pode ser delegada (parafiscalidade â€” art. 7Âº CTN).",
+    # â”€â”€ DÃ­vida ativa â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "DÃ­vida Ativa Ã© o crÃ©dito da Fazenda nÃ£o pago no prazo; a inscriÃ§Ã£o em dÃ­vida ativa gera a CDA, tÃ­tulo executivo extrajudicial (art. 2Âº LEF).",
+    "CDA (CertidÃ£o de DÃ­vida Ativa) tem presunÃ§Ã£o relativa de liquidez e certeza; pode ser impugnada por prova inequÃ­voca do devedor.",
+    # â”€â”€ Imunidades especÃ­ficas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "Imunidade recÃ­proca: UniÃ£o, Estados, DF e MunicÃ­pios nÃ£o se tributam mutuamente (art. 150, VI, 'a' CF/88); extensÃ­vel a autarquias e fundaÃ§Ãµes pÃºblicas.",
+    "Imunidade de entidades educacionais e de assistÃªncia social sem fins lucrativos (art. 150, VI, 'c' CF/88); condicionada ao art. 14 CTN.",
+    "Imunidade de imprensa: livros, jornais, periÃ³dicos e papel de impressÃ£o (art. 150, VI, 'd' CF/88).",
+    "Imunidade musical: obras fonogrÃ¡ficas ou videofonogrÃ¡ficas nacionais (art. 150, VI, 'e' CF/88, incluÃ­do pela EC 75/2013).",
+    # â”€â”€ AntecipaÃ§Ã£o/substituiÃ§Ã£o tributÃ¡ria â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "SubstituiÃ§Ã£o tributÃ¡ria para frente (progressiva): fato gerador presumido; STF declarou constitucional mas exige restituiÃ§Ã£o se nÃ£o ocorrer (art. 150, Â§7Âº CF/88).",
+    "SubstituiÃ§Ã£o tributÃ¡ria para trÃ¡s (diferimento): postergaÃ§Ã£o do pagamento para etapa posterior da cadeia.",
+]
+
+print(f"âœ… {len(CONCEITOS)} conceitos jurÃ­dicos carregados.")
+
+
+# ============================================================
+# CÃ‰LULA 3 â€” Upload dos PDFs e processamento
+# ============================================================
+
+print("ðŸ“‚ FaÃ§a upload dos PDFs (CF, CTN, leis municipais, 9.784, LAI etc.):")
+uploaded = files.upload()
+pdfs = list(uploaded.keys())
+print(f"\nâœ… {len(pdfs)} PDF(s) carregado(s).")
+
+
+# ------------------------------------------------------------
+# FunÃ§Ãµes de chunking â€” hierÃ¡rquico + sliding window fallback
+# ------------------------------------------------------------
+
+def limpa_texto(texto: str) -> str:
+    """Remove artefatos comuns de PDF (quebras de linha internas, espaÃ§os duplos etc.)."""
+    texto = re.sub(r"(?<!\n)\n(?!\n)", " ", texto)       # quebras de linha simples â†’ espaÃ§o
+    texto = re.sub(r" {2,}", " ", texto)                   # espaÃ§os mÃºltiplos
+    texto = re.sub(r"\f", "\n\n", texto)                   # form feed â†’ parÃ¡grafo
+    return texto.strip()
+
+
+def extrai_norma(texto: str, nome_arquivo: str) -> str:
+    """Tenta extrair identificaÃ§Ã£o da norma no cabeÃ§alho do PDF."""
+    padrao = r"(lei\s+(?:complementar\s+)?|decreto(?:\s*-lei)?\s+|lc\s+)n?[ÂºÂ°]?\s*([\d.]+)\s*[,/de]+\s*(\d{4})"
+    m = re.search(padrao, texto[:3000], re.I)
+    if m:
+        return m.group(0).upper().strip()
+    return Path(nome_arquivo).stem.replace("_", " ").replace("-", " ").title()
+
+
+def chunking_hierarquico(texto: str) -> list[dict]:
+    """
+    Divide o texto respeitando a hierarquia artigo â†’ parÃ¡grafo â†’ inciso.
+    Retorna lista de {cabecalho, texto, artigo}.
+    """
+    # PadrÃ£o para delimitadores estruturais
+    delimitador = re.compile(
+        r"(Art\.?\s*\d+[ÂºÂ°]?[.\-]?|"      # Art. 1Âº
+        r"Â§\s*\d+[ÂºÂ°]?[.\-]?|"             # Â§ 1Âº
+        r"ParÃ¡grafo Ãºnico\.?|"             # ParÃ¡grafo Ãºnico
+        r"[IVXLCDM]{1,6}\s*[-â€“]\s*)",      # I - / II - (incisos)
+        flags=re.I
+    )
+
+    partes = delimitador.split(texto)
+    resultado = []
+    artigo_atual = "PreÃ¢mbulo"
+
+    i = 1
+    while i < len(partes):
+        cabecalho_raw = partes[i].strip() if i < len(partes) else ""
+        conteudo_raw  = partes[i + 1].strip() if i + 1 < len(partes) else ""
+
+        if not conteudo_raw:
+            i += 2
+            continue
+
+        cabecalho = re.sub(r"\s+", " ", cabecalho_raw)
+
+        if re.match(r"art\.?\s*\d+", cabecalho, re.I):
+            artigo_atual = cabecalho
+
+        chunk_texto = (cabecalho + " " + conteudo_raw)[:CHUNK_MAX_CHARS]
+
+        if len(chunk_texto) >= CHUNK_MIN_CHARS:
+            resultado.append({
+                "cabecalho": cabecalho[:200],
+                "texto": chunk_texto,
+                "artigo": artigo_atual[:120],
+            })
+        i += 2
+
+    # Fallback: sliding window se a extraÃ§Ã£o estrutural falhou
+    if len(resultado) < 3:
+        resultado = sliding_window(texto)
+
+    return resultado
+
+
+def sliding_window(texto: str, tamanho: int = 1500, sobreposicao: int = 300) -> list[dict]:
+    """Chunking por janela deslizante â€” fallback para documentos sem estrutura."""
+    chunks_sw = []
+    inicio = 0
+    while inicio < len(texto):
+        fim = min(inicio + tamanho, len(texto))
+        trecho = texto[inicio:fim].strip()
+        if len(trecho) >= CHUNK_MIN_CHARS:
+            chunks_sw.append({
+                "cabecalho": f"Trecho ~{inicio//1000}k",
+                "texto": trecho,
+                "artigo": "Sem estrutura",
+            })
+        inicio += tamanho - sobreposicao
+    return chunks_sw
+
+
+# ------------------------------------------------------------
+# Processa PDFs e monta lista de chunks
+# ------------------------------------------------------------
+
+chunks: list[dict] = []
+doc_id = 0
+
+for pdf_nome in tqdm(pdfs, desc="Processando PDFs"):
+    try:
+        with pdfplumber.open(pdf_nome) as pdf:
+            paginas = [p.extract_text() or "" for p in pdf.pages]
+        texto_completo = limpa_texto("\n\n".join(paginas))
+    except Exception as e:
+        print(f"âš ï¸  Erro ao ler {pdf_nome}: {e}")
+        continue
+
+    norma = extrai_norma(texto_completo, pdf_nome)
+
+    for parte in extrai_artigos_incisos_v2(texto_completo):
+        chunks.append({
+            "id":     doc_id,
+            "text":   parte["texto"],
+            "source": pdf_nome,
+            "norma":  norma,
+            "artigo": parte["artigo"],
+            "tipo":   "lei",
+        })
+        doc_id += 1
+
+# â”€â”€ Adiciona conceitos jurÃ­dicos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+for i, texto_conceito in enumerate(CONCEITOS):
+    chunks.append({
+        "id":     900_000 + i,
+        "text":   texto_conceito,
+        "source": "base_conceitos",
+        "norma":  "Conceito JurÃ­dico",
+        "artigo": "Conceito",
+        "tipo":   "conceito",
+    })
+
+print(f"\nâœ… {len(chunks)} chunks criados  ({doc_id} de leis + {len(CONCEITOS)} conceitos).")
+
+
+# FunÃ§Ã£o que faltava (renomeada para v2 para clareza)
+def extrai_artigos_incisos_v2(texto: str) -> list[dict]:
+    return chunking_hierarquico(texto)
+
+
+# ============================================================
+# CÃ‰LULA 4 â€” Gera embeddings e cria banco LanceDB
+# ============================================================
+
+print("â³ Gerando embeddings (pode levar 2â€“5 min dependendo do volume)...")
+textos = [c["text"] for c in chunks]
+vectors = embed_model.encode(
+    textos,
+    normalize_embeddings=True,
+    batch_size=64,
+    show_progress_bar=True,
+    convert_to_numpy=True,
+).tolist()
+
+# Monta tabela PyArrow
+table_data = pa.table({
+    "id":        [c["id"]     for c in chunks],
+    "text":      [c["text"]   for c in chunks],
+    "source":    [c["source"] for c in chunks],
+    "norma":     [c["norma"]  for c in chunks],
+    "artigo":    [c["artigo"] for c in chunks],
+    "tipo":      [c["tipo"]   for c in chunks],
+    "vector":    vectors,
+    "full_text": textos,   # coluna usada no Ã­ndice FTS
+})
+
+# Conecta ao banco e (re)cria tabela "leis"
+db = lancedb.connect(DB_PATH)
+if "leis" in db.table_names():
+    db.drop_table("leis")
+tbl = db.create_table("leis", data=table_data)
+
+# Ãndices: IVF (vetorial) + FTS (BM25 nativo do LanceDB)
+dim = len(vectors[0])
+num_sub_vectors = max(8, dim // 16)   # heurÃ­stica: dim/16 (ex.: 1024â†’64)
+tbl.create_index(
+    metric="cosine",
+    num_partitions=min(256, max(64, len(chunks) // 100)),
+    num_sub_vectors=num_sub_vectors,
+)
+tbl.create_fts_index("full_text", replace=True)
+
+print(f"âœ… LanceDB criado em '{DB_PATH}' com {len(chunks)} registros.")
+print(f"   DimensÃ£o do vetor: {dim} | num_sub_vectors: {num_sub_vectors}")
+
+
+# ============================================================
+# CÃ‰LULA 5 â€” Busca hÃ­brida com reranking
+# ============================================================
+
+def busca(
+    pergunta_texto: str,
+    top_k_vec: int = 40,     # candidatos da busca vetorial
+    top_k_final: int = 12,   # apÃ³s fusÃ£o hÃ­brida
+    top_k_rerank: int = 6,   # apÃ³s reranking
+    verbose: bool = True,
+) -> list[dict]:
+    """
+    Pipeline completo:
+      1. k-NN vetorial  (semÃ¢ntica)
+      2. BM25 sobre os candidatos (palavras-chave)
+      3. FusÃ£o ponderada dos scores
+      4. Cross-encoder reranking (precisÃ£o mÃ¡xima)
+    """
+    # 1 â”€â”€ Embedding da pergunta
+    query_vec = embed_model.encode(
+        pergunta_texto, normalize_embeddings=True
+    ).tolist()
+
+    # 2 â”€â”€ Busca vetorial
+    candidatos = (
+        tbl.search(query_vec, vector_column_name="vector")
+           .limit(top_k_vec)
+           .to_list()
+    )
+
+    if not candidatos:
+        print("âš ï¸  Nenhum resultado encontrado.")
+        return []
+
+    # 3 â”€â”€ BM25 sobre os candidatos
+    corpus_tok = [doc["text"].lower().split() for doc in candidatos]
+    bm25 = BM25Okapi(corpus_tok)
+    bm25_scores = bm25.get_scores(pergunta_texto.lower().split())
+
+    # Normaliza BM25 para [0, 1]
+    bm25_max = bm25_scores.max() or 1.0
+    bm25_norm = bm25_scores / bm25_max
+
+    # 4 â”€â”€ FusÃ£o hÃ­brida
+    for i, doc in enumerate(candidatos):
+        sem_score = 1.0 - doc.get("_distance", 1.0)   # cosine â†’ similaridade
+        doc["score_hybrid"] = (VETOR_WEIGHT * sem_score) + (BM25_WEIGHT * bm25_norm[i])
+
+    candidatos.sort(key=lambda x: x["score_hybrid"], reverse=True)
+    candidatos = candidatos[:top_k_final]
+
+    # 5 â”€â”€ Cross-encoder reranking
+    pairs = [[pergunta_texto, r["text"]] for r in candidatos]
+    rerank_scores = reranker.predict(pairs, show_progress_bar=False)
+    for i, r in enumerate(candidatos):
+        r["rerank_score"] = float(rerank_scores[i])
+
+    candidatos.sort(key=lambda x: x["rerank_score"], reverse=True)
+    resultados = candidatos[:top_k_rerank]
+
+    # 6 â”€â”€ ExibiÃ§Ã£o
+    if verbose:
+        print(f"\n{'â•'*70}")
+        print(f"  Pergunta: {pergunta_texto}")
+        print(f"{'â•'*70}")
+        for i, r in enumerate(resultados, 1):
+            fonte = r["source"] if r["source"] != "base_conceitos" else "Conceito jurÃ­dico"
+            score = r["rerank_score"]
+            artigo = r["artigo"][:70].strip()
+            print(f"\n[{i}] {r['norma']} â€” {artigo}")
+            print(f"     Fonte: {fonte}  |  Score: {score:.3f}")
+            print(f"     {r['text'][:500]}{'...' if len(r['text']) > 500 else ''}")
+            print(f"{'â”€'*70}")
+
+    return resultados
+
+
+# Alias amigÃ¡vel
+pergunta = busca
+
+
+# ============================================================
+# CÃ‰LULA 6 â€” Tabela "processos" (opcional)
+# ============================================================
+
+def cria_tabela_processos(dados_processos: list[dict]):
+    """
+    Cria (ou recria) a tabela 'processos' no LanceDB.
+
+    Campos esperados em cada item de dados_processos:
+        id_processo (str), tributo (str), fase_atual (str),
+        data_chave (str "YYYY-MM-DD"), valor_devido (float),
+        devedor_anon (str), text (str), tipo (str)
+    """
+    texts   = [d["text"] for d in dados_processos]
+    vectors = embed_model.encode(
+        texts, normalize_embeddings=True, show_progress_bar=True
+    ).tolist()
+
+    table_processos = pa.table({
+        "id":          list(range(len(dados_processos))),
+        "id_processo": [d["id_processo"]  for d in dados_processos],
+        "tributo":     [d["tributo"]      for d in dados_processos],
+        "fase_atual":  [d["fase_atual"]   for d in dados_processos],
+        "data_chave":  pa.array(
+                           [d["data_chave"] for d in dados_processos],
+                           type=pa.string()   # mantÃ©m como string ISO; converta se precisar de filtros temporais
+                       ),
+        "valor_devido":[d["valor_devido"] for d in dados_processos],
+        "devedor_anon":[d["devedor_anon"] for d in dados_processos],
+        "text":        texts,
+        "tipo":        [d["tipo"]         for d in dados_processos],
+        "full_text":   texts,
+        "vector":      vectors,
+    })
+
+    if "processos" in db.table_names():
+        db.drop_table("processos")
+
+    tbl_proc = db.create_table("processos", data=table_processos)
+    tbl_proc.create_index(metric="cosine")
+    tbl_proc.create_fts_index("full_text", replace=True)
+    print(f"âœ… Tabela 'processos' criada com {len(dados_processos)} registros.")
+    return tbl_proc
+
+
+def busca_processo(pergunta_texto: str, top_k: int = 5) -> list[dict]:
+    """Busca semÃ¢ntica na tabela de processos."""
+    tbl_proc   = db.open_table("processos")
+    query_vec  = embed_model.encode(pergunta_texto, normalize_embeddings=True).tolist()
+    resultados = tbl_proc.search(query_vec, vector_column_name="vector").limit(top_k).to_list()
+
+    print(f"\nProcessos relacionados a: '{pergunta_texto}'")
+    for r in resultados:
+        print(f"  [{r['id_processo']}] {r['tributo']} | {r['fase_atual']} | R$ {r['valor_devido']:,.2f}")
+        print(f"  {r['text'][:300]}...\n{'â”€'*60}")
+    return resultados
+
+
+# ============================================================
+# CÃ‰LULA 7 â€” Testes rÃ¡pidos
+# ============================================================
+
+if __name__ == "__main__":
+    # Conceitos bÃ¡sicos
+    pergunta("o que Ã© IPTU?")
+    pergunta("quais sÃ£o os princÃ­pios da Lei 9.784?")
+    pergunta("prazo para recurso administrativo federal")
+
+    # LegislaÃ§Ã£o (depende dos PDFs carregados)
+    pergunta("qual o prazo de decadÃªncia para lanÃ§amento tributÃ¡rio?")
+    pergunta("como funciona a substituiÃ§Ã£o tributÃ¡ria para frente no ICMS?")
+
+    # Exemplo de uso da tabela processos
+    dados_mock = [
+        {
+            "id_processo": "2024/000123",
+            "tributo":      "IPTU",
+            "fase_atual":   "NotificaÃ§Ã£o",
+            "data_chave":   "2024-12-10",
+            "valor_devido": 15_000.00,
+            "devedor_anon": "hash_abcd123",
+            "text":         "Processo 2024/000123. DÃ­vida de IPTU exercÃ­cio 2024. "
+                            "Contribuinte notificado em 10/12/2024. Prazo legal para "
+                            "defesa Ã© de 30 dias. ImÃ³vel localizado em Ã¡rea de alto valor.",
+            "tipo":         "processo",
+        },
+        {
+            "id_processo": "2023/005678",
+            "tributo":      "ISS",
+            "fase_atual":   "ExecuÃ§Ã£o Fiscal",
+            "data_chave":   "2023-03-20",
+            "valor_devido": 8_500.50,
+            "devedor_anon": "hash_xyz789",
+            "text":         "Processo 2023/005678. ISS nÃ£o recolhido sobre serviÃ§os de "
+                            "consultoria. CDA inscrita. ExecuÃ§Ã£o fiscal distribuÃ­da em "
+                            "20/03/2023. Bem imÃ³vel penhorado.",
+            "tipo":         "processo",
+        },
+    ]
+
+    tbl_proc = cria_tabela_processos(dados_mock)
+    busca_processo("IPTU nÃ£o pago com prazo para defesa")
