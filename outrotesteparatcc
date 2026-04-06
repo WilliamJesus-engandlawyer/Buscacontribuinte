@@ -171,7 +171,13 @@ def extrai_artigos_incisos_v2(texto: str) -> list[dict]:
 # ============================================================
 # CÉLULA 3 — Processamento
 # ============================================================
+from google.colab import files
 
+print("📂 Faça upload dos PDFs (CF, CTN, leis etc.):")
+uploaded = files.upload()
+
+pdfs = list(uploaded.keys())
+print(f"\n✅ {len(pdfs)} PDF(s) carregado(s).")
 chunks: list[dict] = []
 doc_id = 0
 
