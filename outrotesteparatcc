@@ -168,6 +168,13 @@ def sliding_window(texto: str, tamanho: int = 1500, sobreposicao: int = 300) -> 
 def extrai_artigos_incisos_v2(texto: str) -> list[dict]:
     return chunking_hierarquico(texto)
 
+def limpa_texto(texto: str) -> str:
+    """Remove artefatos comuns de PDF."""
+    texto = re.sub(r"(?<!\n)\n(?!\n)", " ", texto)
+    texto = re.sub(r" {2,}", " ", texto)
+    texto = re.sub(r"\f", "\n\n", texto)
+    return texto.strip()
+
 # ============================================================
 # CÉLULA 3 — Processamento
 # ============================================================
