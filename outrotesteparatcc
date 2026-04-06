@@ -175,6 +175,14 @@ def limpa_texto(texto: str) -> str:
     texto = re.sub(r"\f", "\n\n", texto)
     return texto.strip()
 
+def extrai_norma(texto: str, nome_arquivo: str) -> str:
+    """Tenta extrair identificação da norma no cabeçalho do PDF."""
+    padrao = r"(lei\s+(?:complementar\s+)?|decreto(?:\s*-lei)?\s+|lc\s+)n?[º°]?\s*([\d.]+)\s*[,/de]+\s*(\d{4})"
+    m = re.search(padrao, texto[:3000], re.I)
+    if m:
+        return m.group(0).upper().strip()
+    return Path(nome_arquivo).stem.replace("_", " ").replace("-", " ").title()
+
 # ============================================================
 # CÉLULA 3 — Processamento
 # ============================================================
